@@ -1,0 +1,77 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'your_aws_region'
+        AWS_ACCESS_KEY_ID = credentials('aws-access-key-id')
+        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
+        EMR_VERSION = '6.0.0' // Change this to your desired EMR version
+    }
+
+    stages {
+        stage('Create EMR Cluster') {
+            steps {
+                script {
+                    def clusterId = sh(script: """
+                        aws emr create-cluster \
+                            --release-label emr-${EMR_VERSION} \
+                            --instance-type m5.xlarge \
+                            --instance-count 3 \
+                            --applications Name=Hadoop Name=Spark \
+                            --use-default-roles \
+                            --ec2-attributes KeyName=your_key_pair \
+                            --bootstrap-actions Path=s3://your-bucket/bootstrap.sh \
+                            --region ${AWS_REGION} \
+                            --query 'ClusterId' \
+                            --output text
+                    """, returnStdout: true).trim()
+                    env.CLUSTER_ID = clusterId
+                }
+            }
+        }
+
+        stage('Wait for EMR Cluster to Complete') {
+            steps {
+                script {
+                    sh """
+                        aws emr wait cluster-running --cluster-id ${env.CLUSTER_ID}
+                    """
+                }
+            }
+        }
+
+        stage('Approval') {
+            input {
+                message "Approve or reject the EMR Cluster creation?"
+                ok "Approve"
+                submitter "admin"
+            }
+        }
+
+        stage('Cleanup') {
+            when {
+                expression {
+                    // Cleanup if the input is rejected
+                    currentBuild.rawBuild.causes.any { cause ->
+                        cause.class.toString().contains("RejectedCause")
+                    }
+                }
+            }
+            steps {
+                script {
+                    sh """
+                        aws emr terminate-clusters --cluster-ids ${env.CLUSTER_ID}
+                    """
+                }
+            }
+        }
+
+        stage('Print Cluster ID') {
+            steps {
+                script {
+                    echo "EMR Cluster ID: ${env.CLUSTER_ID}"
+                }
+            }
+        }
+    }
+}
